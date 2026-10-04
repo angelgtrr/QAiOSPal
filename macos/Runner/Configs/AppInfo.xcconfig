@@ -5,10 +5,10 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = qa_ios_pal
+PRODUCT_NAME = QAiOSPal
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.sdi.qaIosPal
+PRODUCT_BUNDLE_IDENTIFIER = com.akmsoftware.qaiospal
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.sdi. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 Developed by angelgtrr. All rights reserved.
