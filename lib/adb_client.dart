@@ -136,6 +136,32 @@ class AdbClient implements DeviceClient {
   }
 
   @override
+  bool get supportsShowTouches => true;
+
+  Future<String> _shellOut(String command) async {
+    final result = await AndroidTools.runAdb(['shell', command], serial: serial);
+    if (result.exitCode != 0) throw Exception('${result.stderr}${result.stdout}'.trim());
+    return (result.stdout as String).trim();
+  }
+
+  @override
+  Future<bool?> showTouches() async => (await _shellOut('settings get system show_touches')) == '1';
+
+  @override
+  Future<void> setShowTouches(bool on) => _shell('settings put system show_touches ${on ? 1 : 0}');
+
+  @override
+  Future<bool?> darkMode() async {
+    final out = (await _shellOut('cmd uimode night')).toLowerCase();
+    if (out.contains('yes')) return true;
+    if (out.contains('no')) return false;
+    return null;
+  }
+
+  @override
+  Future<void> setDarkMode(bool dark) => _shell('cmd uimode night ${dark ? 'yes' : 'no'}');
+
+  @override
   Future<void> goHome() => _shell('input keyevent KEYCODE_HOME');
 
   @override

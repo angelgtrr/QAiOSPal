@@ -23,6 +23,15 @@ abstract class DeviceClient {
   /// Called with each JPEG the frame source extracts, so the backend can track the real frame size.
   void frameReceived(Uint8List jpeg);
 
+  /// Whether the device can draw its own tap indicators.
+  bool get supportsShowTouches;
+  Future<bool?> showTouches();
+  Future<void> setShowTouches(bool on);
+
+  /// Device-wide dark mode.
+  Future<bool?> darkMode();
+  Future<void> setDarkMode(bool dark);
+
   Future<void> connect();
   Future<void> disconnect();
   Future<Uint8List> screenshot();

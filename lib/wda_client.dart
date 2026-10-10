@@ -186,6 +186,29 @@ class WdaClient implements DeviceClient {
   }
 
   @override
+  bool get supportsShowTouches => false;
+
+  @override
+  Future<bool?> showTouches() async => null;
+
+  @override
+  Future<void> setShowTouches(bool on) async => throw Exception('Showing taps on the device is not supported on iOS');
+
+  @override
+  Future<bool?> darkMode() async {
+    try {
+      return await _script('mobile: getAppearance', {}) == 'dark';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> setDarkMode(bool dark) async {
+    await _script('mobile: setAppearance', {'style': dark ? 'dark' : 'light'});
+  }
+
+  @override
   Future<void> goHome() async {
     try {
       await _script('mobile: activateApp', {'bundleId': 'com.apple.springboard'});

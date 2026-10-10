@@ -7,11 +7,13 @@ import 'package:flutter/material.dart';
 
 import 'adb_client.dart';
 import 'android_tools.dart';
+import 'apps_dialog.dart';
 import 'appium_launcher.dart';
 import 'device_client.dart';
 import 'frame_source.dart';
 import 'overlay.dart';
 import 'recorder.dart';
+import 'targets.dart';
 import 'wda_client.dart';
 
 void main() => runApp(const QaIosPalApp());
@@ -49,16 +51,20 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
   DeviceClient? _client;
   FrameSource? _source;
   Recorder? _recorder;
+  FrameSource? _recSource;
+  Uint8List? _recFrame;
   final _appium = AppiumLauncher();
   late final AppLifecycleListener _lifecycle;
   Uint8List? _frame;
   final List<({Offset local, int ms})> _touch = [];
   final Stopwatch _touchClock = Stopwatch();
   bool _connecting = false;
-  bool _android = false;
-  List<AndroidDevice> _androidDevices = [];
-  List<String> _avds = [];
-  String? _androidChoice;
+  List<Target> _targets = [TargetDetector.manualIos];
+  Target _target = TargetDetector.manualIos;
+  Timer? _detectTimer;
+  bool _detecting = false;
+  bool? _showTouches;
+  bool? _dark;
   Offset _scrollAcc = Offset.zero;
   Offset _scrollAt = Offset.zero;
   Timer? _scrollTimer;
@@ -68,6 +74,10 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
   void initState() {
     super.initState();
     _ticker = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat();
+    _refreshTargets();
+    _detectTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+      if (_client == null && !_connecting) _refreshTargets();
+    });
     _lifecycle = AppLifecycleListener(
       onExitRequested: () async {
         _appium.stop();
@@ -79,6 +89,7 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
   @override
   void dispose() {
     _scrollTimer?.cancel();
+    _detectTimer?.cancel();
     _ticker.dispose();
     _lifecycle.dispose();
     _appium.stop();
@@ -96,33 +107,31 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
     });
   }
 
-  Future<void> _refreshAndroid() async {
+  Future<void> _refreshTargets() async {
+    if (_detecting) return;
+    _detecting = true;
     try {
-      final devices = await AndroidTools.listDevices();
-      final avds = await AndroidTools.listAvds();
+      final found = await TargetDetector.detect();
       if (!mounted) return;
       setState(() {
-        _androidDevices = devices;
-        _avds = avds;
-        final choices = _androidChoices().map((c) => c.value);
-        if (!choices.contains(_androidChoice)) _androidChoice = choices.isEmpty ? null : choices.first;
+        _targets = found;
+        _target = found.firstWhere((t) => t.key == _target.key, orElse: () => found.first);
+        if (_target.kind == TargetKind.iosDevice || _target.kind == TargetKind.iosSimulator) _udid.text = _target.id;
       });
-    } catch (e) {
-      _say('$e');
+    } finally {
+      _detecting = false;
     }
   }
 
-  /// Connected devices and emulators first, then AVDs that are not running yet.
-  List<({String value, String label})> _androidChoices() {
-    final running = _androidDevices.where((d) => d.state == 'device').toList();
-    return [
-      for (final d in running) (value: 'dev:${d.serial}', label: d.label),
-      for (final a in _avds) (value: 'avd:$a', label: 'Start emulator: $a'),
-    ];
+  void _selectTarget(Target target) {
+    setState(() {
+      _target = target;
+      if (target.kind == TargetKind.iosDevice || target.kind == TargetKind.iosSimulator) _udid.text = target.id;
+    });
   }
 
   Future<void> _connect() async {
-    if (_android) {
+    if (_target.isAndroid) {
       await _connectAndroid();
     } else {
       await _connectIos();
@@ -132,6 +141,11 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
   void _startFrames(DeviceClient client) {
     _client = client;
     _say('Connected ${client.size!.width.toInt()}x${client.size!.height.toInt()}');
+    unawaited(_loadToggles(client));
+    if (_target.isVirtual) {
+      _say('${_target.name} is shown in its own window, so the screen is not streamed here');
+      return;
+    }
     _source = FrameSource(
       client: client,
       onStatus: _say,
@@ -141,24 +155,71 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
     )..start();
   }
 
-  Future<void> _connectAndroid() async {
-    final choice = _androidChoice;
-    if (choice == null) {
-      _say('No Android device found. Connect one with USB debugging on, or start an emulator');
-      return;
+  Future<void> _loadToggles(DeviceClient client) async {
+    bool? touches;
+    bool? dark;
+    try {
+      touches = await client.showTouches();
+    } catch (_) {}
+    try {
+      dark = await client.darkMode();
+    } catch (_) {}
+    if (mounted && _client == client) {
+      setState(() {
+        _showTouches = touches;
+        _dark = dark;
+      });
     }
+  }
+
+  Future<void> _toggleTouches() async {
+    final client = _client;
+    if (client == null) return;
+    final next = !(_showTouches ?? false);
+    try {
+      await client.setShowTouches(next);
+      setState(() => _showTouches = next);
+      _say('Show taps on device: ${next ? 'on' : 'off'}');
+    } catch (e) {
+      _say('Show taps failed: $e');
+    }
+  }
+
+  Future<void> _toggleTheme() async {
+    final client = _client;
+    if (client == null) return;
+    final next = !(_dark ?? false);
+    try {
+      await client.setDarkMode(next);
+      setState(() => _dark = next);
+      _say('Device theme: ${next ? 'dark' : 'light'}');
+    } catch (e) {
+      _say('Theme change failed: $e');
+    }
+  }
+
+  Future<void> _bringToFront() async {
+    final error = await TargetDetector.bringToFront(_target);
+    if (error != null) _say('Bring to front failed: $error');
+  }
+
+  Future<void> _connectAndroid() async {
     setState(() => _connecting = true);
     try {
-      var serial = choice.substring(4);
-      if (choice.startsWith('avd:')) serial = await AndroidTools.launchAvd(serial, _say);
-      final client = AdbClient(serial: serial);
+      var target = _target;
+      if (target.kind == TargetKind.androidAvd) {
+        final serial = await AndroidTools.launchAvd(target.id, _say);
+        target = Target(TargetKind.androidEmulator, serial, target.name);
+        if (mounted) setState(() => _target = target);
+      }
+      final client = AdbClient(serial: target.id);
       await client.connect();
       _startFrames(client);
     } catch (e) {
       _say('Connect failed: $e');
     } finally {
       if (mounted) setState(() => _connecting = false);
-      unawaited(_refreshAndroid());
+      unawaited(_refreshTargets());
     }
   }
 
@@ -194,16 +255,25 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
     setState(() {
       _client = null;
       _frame = null;
+      _showTouches = null;
+      _dark = null;
     });
     _say('Disconnected');
   }
 
   Future<void> _startRecording() async {
     try {
+      final viaHiddenStream = _target.isVirtual;
       final recorder = await Recorder.start(
-        latestFrame: () => _frame,
+        latestFrame: () => viaHiddenStream ? _recFrame : _frame,
         paintOverlay: (canvas, size) => paintMarkers(canvas, size, _markers, DateTime.now()),
       );
+      if (viaHiddenStream) {
+        // Emulators are not streamed to the UI, so pull frames just for the recording.
+        _recFrame = null;
+        _recSource = FrameSource(client: _client!, onStatus: _say, onFrame: (frame) => _recFrame = frame);
+        unawaited(_recSource!.start());
+      }
       setState(() => _recorder = recorder);
       _say('Recording started');
     } catch (e) {
@@ -215,6 +285,8 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
     final recorder = _recorder;
     if (recorder == null) return;
     setState(() => _recorder = null);
+    _recSource?.stop();
+    _recSource = null;
     _say('Saving recording...');
     try {
       final path = await recorder.stop();
@@ -328,13 +400,16 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
   Widget build(BuildContext context) {
     final connected = _client != null;
     return Scaffold(
-      body: Row(
+      body: Stack(
+        children: [
+          Row(
         children: [
           SizedBox(width: 340, child: _panel(connected)),
           const VerticalDivider(width: 1),
           Expanded(
             child: LayoutBuilder(
               builder: (context, box) {
+                if (_target.isVirtual) return _virtualPane(connected);
                 final s = _client?.size;
                 final aspect = s == null ? 0.46 : s.width / s.height;
                 final navH = (box.maxHeight * 0.08).clamp(44.0, 72.0);
@@ -353,6 +428,63 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
             ),
           ),
         ],
+          ),
+          Positioned(top: 8, right: 8, child: _topButtons(connected)),
+        ],
+      ),
+    );
+  }
+
+  Widget _topButtons(bool connected) {
+    final canTouch = connected && (_client?.supportsShowTouches ?? false);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton.filledTonal(
+          tooltip: canTouch || !connected ? 'Show taps on device: ${_showTouches == true ? 'on' : 'off'}' : 'Not supported on iOS',
+          isSelected: _showTouches == true,
+          onPressed: canTouch ? _toggleTouches : null,
+          icon: const Icon(Icons.touch_app_outlined),
+          selectedIcon: const Icon(Icons.touch_app),
+        ),
+        const SizedBox(width: 4),
+        IconButton.filledTonal(
+          tooltip: 'Device theme: ${_dark == true ? 'dark' : 'light'} (click to switch)',
+          isSelected: _dark == true,
+          onPressed: connected ? _toggleTheme : null,
+          icon: const Icon(Icons.light_mode),
+          selectedIcon: const Icon(Icons.dark_mode),
+        ),
+      ],
+    );
+  }
+
+  /// Emulators and simulators are not streamed: they already have their own window.
+  Widget _virtualPane(bool connected) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 360),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(_target.isAndroid ? Icons.android : Icons.phone_iphone, size: 56),
+            const SizedBox(height: 12),
+            Text(_target.name, style: Theme.of(context).textTheme.titleMedium, textAlign: TextAlign.center),
+            const SizedBox(height: 4),
+            Text(
+              connected ? 'Control it in its own window.' : 'Connect to use the controls below.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _bringToFront,
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('Bring to front'),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(width: 280, height: 56, child: _navBar(connected, 56)),
+          ],
+        ),
       ),
     );
   }
@@ -365,21 +497,25 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
         children: [
           Text('QA Mobile Pal', style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 12),
-          SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(value: false, label: Text('iOS'), icon: Icon(Icons.phone_iphone)),
-              ButtonSegment(value: true, label: Text('Android'), icon: Icon(Icons.android)),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  isExpanded: true,
+                  key: ValueKey('${_target.key}/${_targets.length}'),
+                  initialValue: _target.key,
+                  decoration: const InputDecoration(labelText: 'Device', isDense: true),
+                  items: [
+                    for (final t in _targets) DropdownMenuItem(value: t.key, child: Text(t.label, overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: connected || _connecting ? null : (v) => _selectTarget(_targets.firstWhere((t) => t.key == v)),
+                ),
+              ),
+              IconButton(tooltip: 'Refresh devices', onPressed: connected ? null : _refreshTargets, icon: const Icon(Icons.refresh)),
             ],
-            selected: {_android},
-            onSelectionChanged: connected || _connecting
-                ? null
-                : (v) {
-                    setState(() => _android = v.first);
-                    if (_android) _refreshAndroid();
-                  },
           ),
           const SizedBox(height: 12),
-          if (_android) ..._androidFields(connected) else ..._iosFields(connected),
+          if (_target.isIos) ..._iosFields(connected),
           const SizedBox(height: 12),
           Row(
             children: [
@@ -392,7 +528,7 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
               const SizedBox(width: 8),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: connected ? (_recorder == null ? _startRecording : _stopRecording) : null,
+                  onPressed: connected && (!_target.isVirtual || _target.isAndroid) ? (_recorder == null ? _startRecording : _stopRecording) : null,
                   icon: Icon(Icons.fiber_manual_record, color: _recorder == null ? null : Colors.red),
                   label: Text(_recorder == null ? 'Record' : 'Stop'),
                 ),
@@ -413,6 +549,17 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
               IconButton(onPressed: connected ? _sendText : null, icon: const Icon(Icons.send)),
             ],
           ),
+          if (_client is AdbClient) ...[
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (_) => AppsDialog(serial: (_client as AdbClient).serial, say: _say),
+              ),
+              icon: const Icon(Icons.apps),
+              label: const Text('Apps: save / install APK'),
+            ),
+          ],
           const SizedBox(height: 12),
           const Divider(height: 1),
           Expanded(
@@ -432,31 +579,10 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
   List<Widget> _iosFields(bool connected) => [
         TextField(controller: _url, enabled: !connected, decoration: const InputDecoration(labelText: 'Appium server', isDense: true)),
         const SizedBox(height: 8),
-        TextField(controller: _udid, enabled: !connected, decoration: const InputDecoration(labelText: 'Device UDID', isDense: true)),
+        TextField(controller: _udid, enabled: !connected, readOnly: _target.kind != TargetKind.iosManual, decoration: const InputDecoration(labelText: 'Device UDID', isDense: true)),
         const SizedBox(height: 8),
         TextField(controller: _bundle, enabled: !connected, decoration: const InputDecoration(labelText: 'Bundle ID (optional)', isDense: true)),
       ];
-
-  List<Widget> _androidFields(bool connected) {
-    final choices = _androidChoices();
-    return [
-      Row(
-        children: [
-          Expanded(
-            child: DropdownButtonFormField<String>(
-              isExpanded: true,
-              initialValue: choices.any((c) => c.value == _androidChoice) ? _androidChoice : null,
-              hint: const Text('No device or emulator found'),
-              decoration: const InputDecoration(labelText: 'Device / emulator', isDense: true),
-              items: [for (final c in choices) DropdownMenuItem(value: c.value, child: Text(c.label, overflow: TextOverflow.ellipsis))],
-              onChanged: connected ? null : (v) => setState(() => _androidChoice = v),
-            ),
-          ),
-          IconButton(tooltip: 'Refresh devices', onPressed: connected ? null : _refreshAndroid, icon: const Icon(Icons.refresh)),
-        ],
-      ),
-    ];
-  }
 
   Widget _navBar(bool connected, double height) {
     Widget navButton(IconData icon, String tip, String label, Future<void> Function(DeviceClient c) action) {

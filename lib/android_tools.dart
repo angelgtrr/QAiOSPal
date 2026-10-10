@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 class AndroidDevice {
@@ -69,6 +70,16 @@ class AndroidTools {
       devices.add(AndroidDevice(serial, state, '${name.replaceAll('_', ' ')} ($serial)', serial.startsWith('emulator-')));
     }
     return devices;
+  }
+
+  static Future<String?> avdName(String serial) async {
+    try {
+      final result = await runAdb(['emu', 'avd', 'name'], serial: serial).timeout(const Duration(seconds: 3));
+      final name = const LineSplitter().convert((result.stdout as String).trim()).first.trim();
+      return result.exitCode == 0 && name.isNotEmpty ? name : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   static Future<List<String>> listAvds() async {

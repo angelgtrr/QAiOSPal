@@ -44,6 +44,7 @@ Switch to **Android** at the top of the side panel. The dropdown lists connected
 - Requires `adb` (Android platform-tools, on PATH or under `ANDROID_HOME`), and USB debugging on for real devices. `adb connect <ip>:5555` devices show up too.
 - Same UI as iOS: click to tap, hold for long press, drag or scroll to swipe, type text, Back / Home / Recents, overlay and MP4 recording.
 - Limits: swipes are straight lines (adb `input swipe`), typing is ASCII only, video is `adb screenrecord` decoded by ffmpeg (needs `ffmpeg`; falls back to `screencap` polling at a few fps without it) and there is no green field box around typed text.
+- **Apps: save / install APK** (side panel, Android only): lists the device's installed apps, saves one to `~/Downloads/Apks/<package>_<version>/` (base APK plus any split APKs), and installs a saved one onto the connected device with `adb install-multiple`. App data is not included.
 - Code: `lib/adb_client.dart`, `lib/android_tools.dart`; both iOS and Android implement `lib/device_client.dart`.
 
 ## Windows
