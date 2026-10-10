@@ -26,6 +26,10 @@ class AppiumLauncher {
     if (uri.host != '127.0.0.1' && uri.host != 'localhost') {
       throw Exception('Appium is not reachable at $baseUrl');
     }
+    if (Platform.isWindows) {
+      throw Exception('Appium is not reachable at $baseUrl. iOS devices need Appium running on a Mac, '
+          'so enter the Appium URL of that Mac (e.g. http://<mac-ip>:4723).');
+    }
     say('Appium is not running, starting it...');
     _output.clear();
     var exited = false;
@@ -56,6 +60,10 @@ class AppiumLauncher {
   }
 
   void stop() {
+    final pid = _process?.pid;
+    if (pid != null && Platform.isWindows) {
+      Process.runSync('taskkill', ['/PID', '$pid', '/T', '/F']);
+    }
     _process?.kill();
     _process = null;
   }

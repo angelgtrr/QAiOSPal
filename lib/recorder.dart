@@ -3,6 +3,8 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'ffmpeg_tools.dart';
+
 class Recorder {
   final Uint8List? Function() latestFrame;
   final void Function(ui.Canvas canvas, ui.Size size) paintOverlay;
@@ -24,23 +26,18 @@ class Recorder {
 
   int get frameCount => _count;
 
-  static String? findFfmpeg() {
-    for (final path in ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg']) {
-      if (File(path).existsSync()) return path;
-    }
-    return null;
-  }
+  static String? findFfmpeg() => findFfmpegBinary();
 
   static Future<Recorder> start({
     required Uint8List? Function() latestFrame,
     required void Function(ui.Canvas canvas, ui.Size size) paintOverlay,
   }) async {
-    if (findFfmpeg() == null) throw Exception('ffmpeg not installed (brew install ffmpeg)');
-    final home = Platform.environment['HOME'] ?? '.';
-    final dir = Directory('$home/Downloads/Recordings');
+    if (findFfmpeg() == null) throw Exception('ffmpeg not installed (macOS: brew install ffmpeg, Windows: winget install ffmpeg)');
+    final home = Platform.environment[Platform.isWindows ? 'USERPROFILE' : 'HOME'] ?? '.';
+    final dir = Directory('$home${Platform.pathSeparator}Downloads${Platform.pathSeparator}Recordings');
     await dir.create(recursive: true);
     final stamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
-    final recorder = Recorder._(latestFrame, paintOverlay, '${dir.path}/recording_$stamp.mp4');
+    final recorder = Recorder._(latestFrame, paintOverlay, '${dir.path}${Platform.pathSeparator}recording_$stamp.mp4');
     recorder._timer = Timer.periodic(_interval, (_) => recorder._tick());
     return recorder;
   }

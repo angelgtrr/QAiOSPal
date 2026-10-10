@@ -4,18 +4,15 @@ import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
-class DeviceSize {
-  final double width;
-  final double height;
-  const DeviceSize(this.width, this.height);
-}
+import 'device_client.dart';
 
-class WdaClient {
+class WdaClient implements DeviceClient {
   final String baseUrl;
   final String udid;
   final String bundleId;
   final int mjpegPort;
   String? sessionId;
+  @override
   DeviceSize? size;
 
   WdaClient({
@@ -24,6 +21,21 @@ class WdaClient {
     this.bundleId = '',
     this.mjpegPort = 9100,
   });
+
+  @override
+  Uri? get mjpegUri => Uri.parse('http://${Uri.parse(baseUrl).host}:$mjpegPort');
+
+  @override
+  Duration get pollInterval => const Duration(milliseconds: 200);
+
+  @override
+  Future<Stream<List<int>>?> openFrameStream() async => null;
+
+  @override
+  Future<void> closeFrameStream() async {}
+
+  @override
+  void frameReceived(Uint8List jpeg) {}
 
   Uri _uri(String path) => Uri.parse('$baseUrl$path');
 
@@ -42,6 +54,7 @@ class WdaClient {
     return decoded is Map ? decoded['value'] : decoded;
   }
 
+  @override
   Future<void> connect() async {
     final alwaysMatch = <String, dynamic>{
       'platformName': 'iOS',
@@ -71,6 +84,7 @@ class WdaClient {
     size = DeviceSize((rect['width'] as num).toDouble(), (rect['height'] as num).toDouble());
   }
 
+  @override
   Future<void> disconnect() async {
     final id = sessionId;
     sessionId = null;
@@ -80,15 +94,18 @@ class WdaClient {
     } catch (_) {}
   }
 
+  @override
   Future<Uint8List> screenshot() async {
     final value = await _send('GET', '/session/$sessionId/screenshot');
     return base64Decode(value as String);
   }
 
+  @override
   Future<void> tap(double x, double y) => _script('mobile: tap', {'x': x, 'y': y});
 
   Future<void> doubleTap(double x, double y) => _script('mobile: doubleTap', {'x': x, 'y': y});
 
+  @override
   Future<void> longPress(double x, double y, {double seconds = 1.0}) =>
       _script('mobile: touchAndHold', {'x': x, 'y': y, 'duration': seconds});
 
@@ -101,6 +118,7 @@ class WdaClient {
         'duration': seconds,
       });
 
+  @override
   Future<void> typeText(String text) async {
     final errors = <String>[];
     try {
@@ -126,6 +144,7 @@ class WdaClient {
     throw Exception(errors.join(' | '));
   }
 
+  @override
   Future<void> gesture(List<({double x, double y, int ms})> path) async {
     final actions = <Map<String, dynamic>>[
       {'type': 'pointerMove', 'duration': 0, 'x': path.first.x.round(), 'y': path.first.y.round()},
@@ -155,6 +174,7 @@ class WdaClient {
     } catch (_) {}
   }
 
+  @override
   Future<void> appSwitcher() {
     final w = size!.width / 2;
     final h = size!.height;
@@ -165,6 +185,7 @@ class WdaClient {
     ]);
   }
 
+  @override
   Future<void> goHome() async {
     try {
       await _script('mobile: activateApp', {'bundleId': 'com.apple.springboard'});
@@ -173,11 +194,13 @@ class WdaClient {
     }
   }
 
+  @override
   Future<void> goBack() =>
       swipe(2, size!.height / 2, size!.width * 0.7, size!.height / 2, seconds: 0.2);
 
   Future<void> pressButton(String name) => _script('mobile: pressButton', {'name': name});
 
+  @override
   Future<Map<String, dynamic>?> focusedElementRect() async {
     try {
       final active = await _send('GET', '/session/$sessionId/element/active');

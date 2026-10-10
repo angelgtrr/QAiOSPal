@@ -5,7 +5,10 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import 'adb_client.dart';
+import 'android_tools.dart';
 import 'appium_launcher.dart';
+import 'device_client.dart';
 import 'frame_source.dart';
 import 'overlay.dart';
 import 'recorder.dart';
@@ -19,7 +22,7 @@ class QaIosPalApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'QA iOS Pal',
+      title: 'QA Mobile Pal',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(colorSchemeSeed: Colors.blue, useMaterial3: true, brightness: Brightness.dark),
       home: const PalScreen(),
@@ -43,7 +46,7 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
   final _markers = <Marker>[];
   late final AnimationController _ticker;
 
-  WdaClient? _client;
+  DeviceClient? _client;
   FrameSource? _source;
   Recorder? _recorder;
   final _appium = AppiumLauncher();
@@ -52,6 +55,10 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
   final List<({Offset local, int ms})> _touch = [];
   final Stopwatch _touchClock = Stopwatch();
   bool _connecting = false;
+  bool _android = false;
+  List<AndroidDevice> _androidDevices = [];
+  List<String> _avds = [];
+  String? _androidChoice;
   Offset _scrollAcc = Offset.zero;
   Offset _scrollAt = Offset.zero;
   Timer? _scrollTimer;
@@ -89,7 +96,73 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
     });
   }
 
+  Future<void> _refreshAndroid() async {
+    try {
+      final devices = await AndroidTools.listDevices();
+      final avds = await AndroidTools.listAvds();
+      if (!mounted) return;
+      setState(() {
+        _androidDevices = devices;
+        _avds = avds;
+        final choices = _androidChoices().map((c) => c.value);
+        if (!choices.contains(_androidChoice)) _androidChoice = choices.isEmpty ? null : choices.first;
+      });
+    } catch (e) {
+      _say('$e');
+    }
+  }
+
+  /// Connected devices and emulators first, then AVDs that are not running yet.
+  List<({String value, String label})> _androidChoices() {
+    final running = _androidDevices.where((d) => d.state == 'device').toList();
+    return [
+      for (final d in running) (value: 'dev:${d.serial}', label: d.label),
+      for (final a in _avds) (value: 'avd:$a', label: 'Start emulator: $a'),
+    ];
+  }
+
   Future<void> _connect() async {
+    if (_android) {
+      await _connectAndroid();
+    } else {
+      await _connectIos();
+    }
+  }
+
+  void _startFrames(DeviceClient client) {
+    _client = client;
+    _say('Connected ${client.size!.width.toInt()}x${client.size!.height.toInt()}');
+    _source = FrameSource(
+      client: client,
+      onStatus: _say,
+      onFrame: (frame) {
+        if (mounted) setState(() => _frame = frame);
+      },
+    )..start();
+  }
+
+  Future<void> _connectAndroid() async {
+    final choice = _androidChoice;
+    if (choice == null) {
+      _say('No Android device found. Connect one with USB debugging on, or start an emulator');
+      return;
+    }
+    setState(() => _connecting = true);
+    try {
+      var serial = choice.substring(4);
+      if (choice.startsWith('avd:')) serial = await AndroidTools.launchAvd(serial, _say);
+      final client = AdbClient(serial: serial);
+      await client.connect();
+      _startFrames(client);
+    } catch (e) {
+      _say('Connect failed: $e');
+    } finally {
+      if (mounted) setState(() => _connecting = false);
+      unawaited(_refreshAndroid());
+    }
+  }
+
+  Future<void> _connectIos() async {
     if (_udid.text.trim().isEmpty) {
       _say('Enter the device UDID first');
       return;
@@ -104,15 +177,7 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
       await _appium.ensureRunning(_url.text.trim(), _say);
       _say('Creating session (this can take a minute)...');
       await client.connect();
-      _client = client;
-      _say('Connected ${client.size!.width.toInt()}x${client.size!.height.toInt()} pt');
-      _source = FrameSource(
-        client: client,
-        onStatus: _say,
-        onFrame: (frame) {
-          if (mounted) setState(() => _frame = frame);
-        },
-      )..start();
+      _startFrames(client);
     } catch (e) {
       _say('Connect failed: $e');
     } finally {
@@ -159,7 +224,7 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
     }
   }
 
-  void _enqueue(String label, Future<void> Function(WdaClient c) action) {
+  void _enqueue(String label, Future<void> Function(DeviceClient c) action) {
     final client = _client;
     if (client == null) return;
     _queue = _queue.then((_) async {
@@ -241,7 +306,7 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
     });
   }
 
-  Future<void> _markField(WdaClient c, String text) async {
+  Future<void> _markField(DeviceClient c, String text) async {
     try {
       final rect = await c.focusedElementRect();
       if (rect != null) {
@@ -298,13 +363,23 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('QA iOS Pal', style: Theme.of(context).textTheme.headlineSmall),
+          Text('QA Mobile Pal', style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 12),
-          TextField(controller: _url, enabled: !connected, decoration: const InputDecoration(labelText: 'Appium server', isDense: true)),
-          const SizedBox(height: 8),
-          TextField(controller: _udid, enabled: !connected, decoration: const InputDecoration(labelText: 'Device UDID', isDense: true)),
-          const SizedBox(height: 8),
-          TextField(controller: _bundle, enabled: !connected, decoration: const InputDecoration(labelText: 'Bundle ID (optional)', isDense: true)),
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: false, label: Text('iOS'), icon: Icon(Icons.phone_iphone)),
+              ButtonSegment(value: true, label: Text('Android'), icon: Icon(Icons.android)),
+            ],
+            selected: {_android},
+            onSelectionChanged: connected || _connecting
+                ? null
+                : (v) {
+                    setState(() => _android = v.first);
+                    if (_android) _refreshAndroid();
+                  },
+          ),
+          const SizedBox(height: 12),
+          if (_android) ..._androidFields(connected) else ..._iosFields(connected),
           const SizedBox(height: 12),
           Row(
             children: [
@@ -354,8 +429,37 @@ class _PalScreenState extends State<PalScreen> with SingleTickerProviderStateMix
     );
   }
 
+  List<Widget> _iosFields(bool connected) => [
+        TextField(controller: _url, enabled: !connected, decoration: const InputDecoration(labelText: 'Appium server', isDense: true)),
+        const SizedBox(height: 8),
+        TextField(controller: _udid, enabled: !connected, decoration: const InputDecoration(labelText: 'Device UDID', isDense: true)),
+        const SizedBox(height: 8),
+        TextField(controller: _bundle, enabled: !connected, decoration: const InputDecoration(labelText: 'Bundle ID (optional)', isDense: true)),
+      ];
+
+  List<Widget> _androidFields(bool connected) {
+    final choices = _androidChoices();
+    return [
+      Row(
+        children: [
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              isExpanded: true,
+              initialValue: choices.any((c) => c.value == _androidChoice) ? _androidChoice : null,
+              hint: const Text('No device or emulator found'),
+              decoration: const InputDecoration(labelText: 'Device / emulator', isDense: true),
+              items: [for (final c in choices) DropdownMenuItem(value: c.value, child: Text(c.label, overflow: TextOverflow.ellipsis))],
+              onChanged: connected ? null : (v) => setState(() => _androidChoice = v),
+            ),
+          ),
+          IconButton(tooltip: 'Refresh devices', onPressed: connected ? null : _refreshAndroid, icon: const Icon(Icons.refresh)),
+        ],
+      ),
+    ];
+  }
+
   Widget _navBar(bool connected, double height) {
-    Widget navButton(IconData icon, String tip, String label, Future<void> Function(WdaClient c) action) {
+    Widget navButton(IconData icon, String tip, String label, Future<void> Function(DeviceClient c) action) {
       return IconButton(
         iconSize: height * 0.5,
         tooltip: tip,

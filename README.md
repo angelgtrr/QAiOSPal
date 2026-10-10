@@ -1,6 +1,6 @@
-# QA iOS Pal
+# QA Mobile Pal
 
-A macOS desktop app for QA that mirrors a USB-connected iPhone on your Mac, lets you control it with the mouse and trackpad, shows where every touch happens, and records the session to an MP4.
+A desktop QA tool that mirrors a USB-connected iPhone (via Appium) or an Android phone/emulator (via adb), lets you control it with the mouse and trackpad, shows where every touch happens, and records the session to an MP4.
 
 It talks to the phone through an [Appium](https://appium.io) server (XCUITest / WebDriverAgent). The app starts Appium for you if it isn't running.
 
@@ -36,6 +36,26 @@ flutter run -d macos
 2. Click **Connect**. The first session can take a minute.
 3. Use the phone view and the Back / Home / App switcher buttons.
 4. Click **Record**, do your steps, then click **Stop**.
+
+## Android
+
+Switch to **Android** at the top of the side panel. The dropdown lists connected real devices and running emulators (via `adb devices`) plus any installed AVDs, which are started and waited on for you. No Appium is needed, and it works on Windows and macOS.
+
+- Requires `adb` (Android platform-tools, on PATH or under `ANDROID_HOME`), and USB debugging on for real devices. `adb connect <ip>:5555` devices show up too.
+- Same UI as iOS: click to tap, hold for long press, drag or scroll to swipe, type text, Back / Home / Recents, overlay and MP4 recording.
+- Limits: swipes are straight lines (adb `input swipe`), typing is ASCII only, video is `adb screenrecord` decoded by ffmpeg (needs `ffmpeg`; falls back to `screencap` polling at a few fps without it) and there is no green field box around typed text.
+- Code: `lib/adb_client.dart`, `lib/android_tools.dart`; both iOS and Android implement `lib/device_client.dart`.
+
+## Windows
+
+The app also runs on Windows, but **iOS automation itself needs a Mac**: Appium's XCUITest driver requires Xcode, so it can't drive an iPhone from Windows. Run Appium on a Mac that has the phone attached, then on Windows:
+
+1. Install Flutter and the Visual Studio "Desktop development with C++" workload.
+2. Install `ffmpeg` and put it on PATH (`winget install ffmpeg`).
+3. `flutter run -d windows`
+4. Set **Appium server** to the Mac, e.g. `http://<mac-ip>:4723` (start Appium there with `appium --address 0.0.0.0`), and make sure the Mac's port 9100 (the MJPEG stream) is reachable too.
+
+On Windows the app does not auto-start Appium. Recordings go to `%USERPROFILE%\Downloads\Recordings`.
 
 ## Notes
 

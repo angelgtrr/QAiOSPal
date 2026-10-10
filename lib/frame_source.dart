@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'wda_client.dart';
+import 'device_client.dart';
 
 class FrameSource {
-  final WdaClient client;
+  final DeviceClient client;
   final void Function(Uint8List frame) onFrame;
   final void Function(String message) onStatus;
   bool _running = false;
@@ -15,9 +15,9 @@ class FrameSource {
 
   Future<void> start() async {
     _running = true;
-    final gotMjpeg = await _runMjpeg();
+    final gotMjpeg = client.mjpegUri != null ? await _runMjpeg() : await _runStream();
     if (_running && !gotMjpeg) {
-      onStatus('MJPEG stream unavailable, polling screenshots');
+      onStatus('Video stream unavailable, polling screenshots');
       await _runPolling();
     }
   }
@@ -26,17 +26,45 @@ class FrameSource {
     _running = false;
     _http?.close(force: true);
     _http = null;
+    client.closeFrameStream();
   }
 
   Future<bool> _runMjpeg() async {
-    var received = false;
     try {
       _http = HttpClient()..connectionTimeout = const Duration(seconds: 5);
-      final request = await _http!.getUrl(Uri.parse('http://127.0.0.1:${client.mjpegPort}'));
+      final request = await _http!.getUrl(client.mjpegUri!);
       final response = await request.close().timeout(const Duration(seconds: 5));
-      var buffer = BytesBuilder(copy: false);
-      var bytes = Uint8List(0);
-      await for (final chunk in response) {
+      return await _consume(response);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Streams from the backend (adb screenrecord). screenrecord stops after 3 minutes, so reopen while it keeps producing frames.
+  Future<bool> _runStream() async {
+    var received = false;
+    while (_running) {
+      Stream<List<int>>? stream;
+      try {
+        stream = await client.openFrameStream();
+      } catch (e) {
+        onStatus('Video stream unavailable: $e');
+        break;
+      }
+      if (stream == null) break;
+      final got = await _consume(stream);
+      await client.closeFrameStream();
+      if (!got) break;
+      received = true;
+    }
+    return received;
+  }
+
+  Future<bool> _consume(Stream<List<int>> stream) async {
+    var received = false;
+    var bytes = Uint8List(0);
+    try {
+      await for (final chunk in stream) {
         if (!_running) break;
         final merged = Uint8List(bytes.length + chunk.length)
           ..setRange(0, bytes.length, bytes)
@@ -54,11 +82,12 @@ class FrameSource {
             break;
           }
           received = true;
-          onFrame(Uint8List.fromList(Uint8List.sublistView(bytes, start, end + 2)));
+          final frame = Uint8List.fromList(Uint8List.sublistView(bytes, start, end + 2));
+          client.frameReceived(frame);
+          onFrame(frame);
           bytes = Uint8List.sublistView(bytes, end + 2);
         }
       }
-      buffer.clear();
     } catch (_) {}
     return received;
   }
@@ -70,7 +99,7 @@ class FrameSource {
         onFrame(await client.screenshot());
       } catch (_) {}
       final elapsed = DateTime.now().difference(started);
-      final wait = const Duration(milliseconds: 200) - elapsed;
+      final wait = client.pollInterval - elapsed;
       if (wait > Duration.zero) await Future.delayed(wait);
     }
   }
